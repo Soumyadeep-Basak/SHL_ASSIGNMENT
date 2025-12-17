@@ -1,0 +1,33 @@
+# Web Scraping
+requests==2.31.0
+beautifulsoup4==4.12.2
+lxml==5.1.0
+playwright==1.40.0
+
+# Data Processing
+pandas==2.2.0
+numpy==1.26.3
+
+# Environment Variables
+python-dotenv==1.0.0
+
+# API Framework
+fastapi==0.109.0
+uvicorn==0.27.0
+pydantic==2.5.3
+
+# Vector Database
+pinecone-client==3.0.2
+
+# LLM Integration
+openai==1.10.0
+
+# BM25 Search
+rank-bm25==0.2.2
+
+# Text Processing
+nltk==3.8.1
+scikit-learn==1.4.0
+
+# Utilities
+tqdm==4.66.1
