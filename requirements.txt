@@ -11,15 +11,8 @@ numpy==1.26.3
 # Environment Variables
 python-dotenv==1.0.0
 
-# API Framework
-fastapi==0.109.0
-uvicorn==0.27.0
-pydantic==2.5.3
-
-# Vector Database
-pinecone-client==3.0.2
-
 # LLM Integration
+google-generativeai==0.3.2
 openai==1.10.0
 
 # BM25 Search

@@ -1,116 +1,160 @@
+import requests
+from bs4 import BeautifulSoup
 import pandas as pd
-import random
 import time
-import os
-from playwright.sync_api import sync_playwright
+import re
 
-INPUT_CSV = r"c:\Users\safal\Desktop\shl_assignment\shl_catalogue.csv"
-OUTPUT_DIR = r"c:\Users\safal\Desktop\shl_assignment\data\raw"
-OUTPUT_CSV = os.path.join(OUTPUT_DIR, "shl_catalogue.csv")
+BASE_URL = "https://www.shl.com/solutions/products/product-catalog/"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36"
+}
+
+LIST_DELAY = 1.0
+DETAIL_DELAY = 1.5
+MAX_RETRIES = 3
 
 
-def scrape_description(page, url):
-    try:
-        print(f"Visiting: {url}")
-        page.goto(url, timeout=60000, wait_until="domcontentloaded")
+# ---------------- SESSION ---------------- #
 
-        time.sleep(1)
+session = requests.Session()
+session.headers.update(HEADERS)
 
-        description = ""
 
-        content_selectors = [
-            ".product-description",
-            ".catalog-product-view__description",
-            "div[itemprop='description']",
-            ".product-detail__description"
-        ]
+# ---------------- DETAIL PAGE ---------------- #
 
-        for selector in content_selectors:
-            if page.locator(selector).count() > 0:
-                description = page.locator(selector).inner_text()
+def fetch_assessment_details(assessment):
+    url = assessment["url"]
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = session.get(url, timeout=20)
+            r.raise_for_status()
+
+            soup = BeautifulSoup(r.content, "html.parser")
+            description = ""
+            duration = ""
+
+            product_module = soup.find(
+                "div", class_=lambda x: x and "product-catalogue" in x
+            )
+
+            if product_module:
+                rows = product_module.find_all(
+                    "div",
+                    class_=lambda x: x and "product-catalogue-training-calendar__row" in x
+                )
+
+                for row in rows:
+                    h4 = row.find("h4")
+                    p = row.find("p")
+                    if not h4 or not p:
+                        continue
+
+                    title = h4.text.lower()
+                    text = p.text.strip()
+
+                    if "description" in title:
+                        description = text
+                    elif "assessment length" in title or "duration" in title:
+                        m = re.search(r'(\d+)', text)
+                        if m:
+                            duration = f"{m.group(1)} minutes"
+
+            assessment["description"] = description
+            assessment["duration"] = duration
+            break
+
+        except Exception as e:
+            if attempt == MAX_RETRIES:
+                print(f"❌ Failed after retries: {url}")
+            else:
+                time.sleep(2 * attempt)
+
+    time.sleep(DETAIL_DELAY)
+    return assessment
+
+
+# ---------------- LIST PAGE ---------------- #
+
+def scrape_table(table):
+    assessments = []
+    rows = table.find_all("tr")[1:]
+
+    for row in rows:
+        cols = row.find_all("td")
+        if len(cols) < 4:
+            continue
+
+        name_tag = cols[0].find("a")
+        if not name_tag:
+            continue
+
+        assessments.append({
+            "name": name_tag.text.strip(),
+            "url": "https://www.shl.com" + name_tag["href"],
+            "description": "",
+            "duration": "",
+            "test_type": ", ".join(
+                k.text.strip() for k in cols[3].find_all("span", class_="product-catalogue__key")
+            ),
+            "remote_testing": "Yes" if cols[1].find("span", class_="-yes") else "No",
+            "adaptive_irt": "Yes" if cols[2].find("span", class_="-yes") else "No",
+        })
+
+    return assessments
+
+
+def scrape_pages(type_param=1, max_pages=32):
+    all_assessments = []
+
+    for page in range(max_pages):
+        start = page * 12
+        url = f"{BASE_URL}?start={start}&type={type_param}"
+        print(f"Fetching list page: start={start}")
+
+        try:
+            r = session.get(url, timeout=20)
+            if r.status_code != 200:
                 break
 
-        if not description:
-            headers = page.locator("h2, h3, h4, strong").filter(has_text="Description")
-            for i in range(headers.count()):
-                header = headers.nth(i)
-                text = header.inner_text().strip()
+            soup = BeautifulSoup(r.content, "html.parser")
+            tables = soup.find_all("table")
+            if not tables:
+                break
 
-                if text.lower() == "description":
-                    next_sibling = header.locator("xpath=following-sibling::*[1]")
-                    if next_sibling.count() > 0:
-                        candidate = next_sibling.inner_text().strip()
-                        if len(candidate) > 10:
-                            description = candidate
-                            break
+            page_assessments = scrape_table(tables[-1])
+            if not page_assessments:
+                break
 
-                    parent = header.locator("xpath=..")
-                    candidate = parent.inner_text().replace("Description", "", 1).strip()
-                    if len(candidate) > 10:
-                        description = candidate
-                        break
+            all_assessments.extend(page_assessments)
 
-        return description.strip()
+        except Exception:
+            break
 
-    except Exception as e:
-        print(f"Error scraping {url}: {e}")
-        return ""
+        time.sleep(LIST_DELAY)
+
+    return all_assessments
 
 
-def main():
-    if os.path.exists(OUTPUT_CSV):
-        print(f"Resuming from {OUTPUT_CSV}")
-        df = pd.read_csv(OUTPUT_CSV)
-    elif os.path.exists(INPUT_CSV):
-        print(f"Starting fresh from {INPUT_CSV}")
-        df = pd.read_csv(INPUT_CSV)
-    else:
-        print(f"Input file not found: {INPUT_CSV}")
-        return
+# ---------------- MAIN ---------------- #
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def scrape():
+    assessments = scrape_pages()
+    print(f"Found {len(assessments)} assessments. Fetching details...")
 
-    print(f"Loaded {len(df)} rows")
+    for i, a in enumerate(assessments, 1):
+        fetch_assessment_details(a)
+        if i % 10 == 0:
+            print(f"Progress: {i}/{len(assessments)}")
 
-    if 'description' not in df.columns:
-        df['description'] = ""
+    return pd.DataFrame(assessments)
 
-    df['description'] = df['description'].fillna("").astype(str)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        )
-        page = context.new_page()
-
-        for index, row in df.iterrows():
-            url = row.get('assessment_url')
-
-            if not isinstance(url, str) or not url.startswith("http"):
-                continue
-
-            if df.at[index, 'description'].strip():
-                continue
-
-            desc = scrape_description(page, url)
-
-            if desc.startswith("Description"):
-                desc = desc[11:].strip()
-
-            df.at[index, 'description'] = desc
-
-            if index % 10 == 0:
-                df.to_csv(OUTPUT_CSV, index=False)
-                print(f"Progress saved at index {index}")
-
-            time.sleep(random.uniform(1.0, 2.0))
-
-        df.to_csv(OUTPUT_CSV, index=False)
-        print(f"Completed. Saved to {OUTPUT_CSV}")
-
-        browser.close()
+def save_to_csv(df, filename="data/raw/shl_catalog.csv"):
+    df.to_csv(filename, index=False)
+    print(f"Saved {len(df)} rows to {filename}")
 
 
 if __name__ == "__main__":
-    main()
+    df = scrape()
+    save_to_csv(df)
